@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Nocturne" />
+  <meta name="theme-color" content="#0B0A0E" />
+  <title>Nocturne — Study Workspace</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-base: #0B0A0E;
+      --surface-glass: rgba(23, 21, 30, 0.78);
+      --border-subtle: rgba(255, 255, 255, 0.07);
+      --text-primary: #F2EFEA;
+      --text-secondary: #9E9AA6;
+    }
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-image:
+        radial-gradient(circle at 15% 8%, rgba(157, 142, 199, 0.055), transparent 42%),
+        radial-gradient(circle at 85% 92%, rgba(94, 158, 132, 0.04), transparent 42%);
+      min-height: 100vh;
+      padding-top: env(safe-area-inset-top);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .glass-panel {
+      background: var(--surface-glass);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.65);
+    }
+    .glass-inset {
+      background: rgba(12, 11, 16, 0.55);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+    }
+    .glass-pill {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+    }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .font-mono-num { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+    .pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem); }
+    .card-scene { perspective: 1200px; }
+    .card-inner {
+      position: relative;
+      transform-style: preserve-3d;
+      transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .card-inner.is-flipped { transform: rotateY(180deg); }
+    .card-face {
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+    }
+    .card-face-back { transform: rotateY(180deg); }
+  </style>
+</head>
+<body class="antialiased selection:bg-white/15 selection:text-white">
+  <div id="app" class="min-h-screen flex flex-col"></div>
+  <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" class="hidden" />
+  <input id="json-import-input" type="file" accept=".json,application/json" class="hidden" />
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const STORAGE_KEY = 'nocturne_study_workspace_v1';
+
+      const PROVIDERS = {
+        gemini: { name: 'Gemini 2.5 Pro', role: 'Synthesis & PDF' },
+        claude: { name: 'Claude 3.7 Sonnet', role: 'Notes & Structure' },
+        gpt4o: { name: 'GPT-4o', role: 'Quizzes & Logic' },
+        ollama: { name: 'Llama 3.3 Local', role: 'Offline Private' }
+      };
+
+      const defaultPersisted = {
+        aiProvider: 'gemini',
+        cloudSyncEnabled: false,
+        modelRouting: {
+          pdfSynthesis: 'gemini',
+          noteSummary: 'claude',
+          quizGen: 'gpt4o',
+          offlineMode: 'ollama'
+        },
+        ollamaUrl: 'http://localhost:11434',
+        timerPreset: 25,
+        studyMinutesLogged: 0,
+        exams: [],
+        notes: [],
+        pdfs: [],
+        flashcards: [],
+        quizQuestions: [],
+        timetableBlocks: [],
+        focusLockStrict: true,
+        autoLockOnTimetable: true,
+        blockedApps: [
+          { id: 'a1', name: 'Instagram', category: 'Social', blocked: true },
+          { id: 'a2', name: 'YouTube', category: 'Video', blocked: true },
+          { id: 'a3', name: 'TikTok', category: 'Social', blocked: true },
+          { id: 'a4', name: 'Reddit', category: 'Forums', blocked: true },
+          { id: 'a5', name: 'Discord', category: 'Chat', blocked: false },
+          { id: 'a6', name: 'X / Twitter', category: 'Social', blocked: true }
+        ],
+        biometricEnabled: true,
+        autoLockTimeout: '1 min',
+        pinCode: '2026'
+      };
+
+      function loadPersisted() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return JSON.parse(JSON.stringify(defaultPersisted));
+          const parsed = JSON.parse(raw);
+          return Object.assign(JSON.parse(JSON.stringify(defaultPersisted)), parsed);
+        } catch (e) {
+          return JSON.parse(JSON.stringify(defaultPersisted));
+        }
+      }
+
+      const persisted = loadPersisted();
+
+      // Runtime session URLs for imported PDFs (not serializable in localStorage)
+      const pdfBlobUrls = {};
+
+      const state = {
+        ...persisted,
+        activeTab: 'dashboard',
+        providerMenuOpen: false,
+        searchOpen: false,
+        searchQuery: '',
+        settingsOpen: false,
+        timerRunning: false,
+        timerSeconds: (persisted.timerPreset || 25) * 60,
+        timerInterval: null,
+        ambientOn: false,
+        audioCtx: null,
+        noiseNode: null,
+        noteSearch: '',
+        selectedNoteId: persisted.notes[0]?.id || null,
+        selectedPdfId: persisted.pdfs[0]?.id || null,
+        pdfZoom: 100,
+        selectedDeck: 'All',
+        cardIndex: 0,
+        cardFlipped: false,
+        showAddCardModal: false,
+        quizIndex: 0,
+        quizAnswers: {},
+        showAddQuizModal: false,
+        showAddExamModal: false,
+        timetableView: 'day',
+        timetableDay: 'Mon',
+        showAddBlockModal: false,
+        focusLockActive: false,
+        screenLocked: false,
+        pinInput: '',
+        pinError: false
+      };
+
+      function saveState() {
+        try {
+          const payload = {};
+          Object.keys(defaultPersisted).forEach(k => { payload[k] = state[k]; });
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        } catch (e) {
+          // Ignore storage quota / sandbox restrictions
+        }
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function showToast(message) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const el = document.createElement('div');
+        el.className = 'pointer-events-auto px-4 py-2.5 rounded-2xl border border-white/10 bg-[#181622]/95 text-xs font-medium text-[#F2EFEA] shadow-2xl backdrop-blur-xl transition-all duration-300';
+        el.textContent = message;
+        container.appendChild(el);
+        setTimeout(() => {
+          el.style.opacity = '0';
+          el.style.transform = 'translateY(-6px)';
+          setTimeout(() => el.remove(), 300);
+        }, 2400);
+      }
+
+      function copyTextSafe(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => showToast('Copied Markdown to clipboard')).catch(() => fallbackCopy(text));
+        } else {
+          fallbackCopy(text);
+        }
+      }
+
+      function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showToast('Copied Markdown to clipboard'); } catch (e) { showToast('Copy unavailable'); }
+        ta.remove();
+      }
+
+      function toggleAmbientSound() {
+        if (state.ambientOn) {
+          if (state.noiseNode) { try { state.noiseNode.disconnect(); } catch (e) {} state.noiseNode = null; }
+          state.ambientOn = false;
+          showToast('Ambient brown noise muted');
+        } else {
+          try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!state.audioCtx) state.audioCtx = new Ctx();
+            if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
+            const bufferSize = state.audioCtx.sampleRate * 2;
+            const buffer = state.audioCtx.createBuffer(1, bufferSize, state.audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            let lastOut = 0;
+            for (let i = 0; i < bufferSize; i++) {
+              const white = Math.random() * 2 - 1;
+              data[i] = (lastOut + 0.02 * white) / 1.02;
+              lastOut = data[i];
+              data[i] *= 0.18;
+            }
+            const src = state.audioCtx.createBufferSource();
+            src.buffer = buffer;
+            src.loop = true;
+            const gain = state.audioCtx.createGain();
+            gain.gain.value = 0.25;
+            src.connect(gain);
+            gain.connect(state.audioCtx.destination);
+            src.start();
+            state.noiseNode = src;
+            state.ambientOn = true;
+            showToast('Ambient brown noise active');
+          } catch (e) {
+            showToast('Audio unavailable in this browser');
+          }
+        }
+        render();
+      }
+
+      function formatTimer(sec) {
+        const m = Math.floor(sec / 60).toString().padStart(2, '0');
+        const s = (sec % 60).toString().padStart(2, '0');
+        return `${m}:${s}`;
+      }
+
+      function toggleTimer() {
+        if (state.timerRunning) {
+          clearInterval(state.timerInterval);
+          state.timerInterval = null;
+          state.timerRunning = false;
+        } else {
+          state.timerRunning = true;
+          clearInterval(state.timerInterval);
+          state.timerInterval = setInterval(() => {
+            if (state.timerSeconds > 0) {
+              state.timerSeconds -= 1;
+              if (state.timerSeconds % 60 === 0) {
+                state.studyMinutesLogged += 1;
+                saveState();
+              }
+              const el = document.getElementById('header-timer-text');
+              if (el) el.textContent = formatTimer(state.timerSeconds);
+            } else {
+              clearInterval(state.timerInterval);
+              state.timerRunning = false;
+              state.focusLockActive = false;
+              saveState();
+              showToast('Focus session complete. Apps unlocked.');
+              render();
+            }
+          }, 1000);
+        }
+        render();
+      }
+
+      function setTimerPreset(mins) {
+        clearInterval(state.timerInterval);
+        state.timerRunning = false;
+        state.timerPreset = mins;
+        state.timerSeconds = mins * 60;
+        saveState();
+        showToast(`Timer set to ${mins} min`);
+        render();
+      }
+
+      function getFilteredCards() {
+        if (state.selectedDeck === 'All') return state.flashcards;
+        return state.flashcards.filter(c => c.deck === state.selectedDeck);
+      }
+
+      function getMasteryPct() {
+        if (!state.flashcards.length) return 0;
+        const mastered = state.flashcards.filter(c => c.mastered).length;
+        return Math.round((mastered / state.flashcards.length) * 100);
+      }
+
+      function getQuizScore() {
+        const answered = Object.keys(state.quizAnswers).length;
+        if (!answered || !state.quizQuestions.length) return 0;
+        let correct = 0;
+        state.quizQuestions.forEach(q => {
+          if (state.quizAnswers[q.id] === q.correct) correct++;
+        });
+        return Math.round((correct / state.quizQuestions.length) * 100);
+      }
+
+      const NAV_ITEMS = [
+        { id: 'dashboard', label: 'Dashboard', icon: 'layout-grid' },
+        { id: 'notes', label: 'Notes', icon: 'file-text' },
+        { id: 'pdfs', label: 'PDFs', icon: 'book-open' },
+        { id: 'flashcards', label: 'Flashcards', icon: 'layers' },
+        { id: 'quizzes', label: 'Quizzes', icon: 'check-circle' },
+        { id: 'planner', label: 'Study Plan', icon: 'target' },
+        { id: 'timetable', label: 'Timetable', icon: 'calendar' },
+        { id: 'applock', label: 'App Lock', icon: 'shield' }
+      ];
+
+      function renderSidebar() {
+        return `
+          <aside class="hidden md:flex flex-col w-56 shrink-0 border-r border-white/[0.07] bg-[#0E0D13]/90 px-3.5 py-5 justify-between">
+            <div class="space-y-6">
+              <div class="px-2.5 flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-xl bg-[#1D1B27] border border-white/10 flex items-center justify-center">
+                  <i data-lucide="moon" class="w-4 h-4 text-[#9D8EC7]"></i>
+                </div>
+                <div>
+                  <div class="text-sm font-semibold tracking-tight text-[#F2EFEA]">Nocturne</div>
+                  <div class="text-[11px] text-[#9E9AA6]">Study Workspace</div>
+                </div>
+              </div>
+
+              <nav class="space-y-1">
+                ${NAV_ITEMS.map(item => {
+                  const active = state.activeTab === item.id;
+                  return `
+                    <button data-tab="${item.id}" class="w-full px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-2.5 transition ${active ? 'bg-white/[0.08] text-[#F2EFEA] border border-white/10' : 'text-[#9E9AA6] hover:text-[#F2EFEA] hover:bg-white/[0.03] border border-transparent'}">
+                      <i data-lucide="${item.icon}" class="w-4 h-4 ${active ? 'text-[#9D8EC7]' : ''}"></i>
+                      <span>${item.label}</span>
+                    </button>
+                  `;
+                }).join('')}
+              </nav>
+            </div>
+
+            <div class="space-y-2.5 pt-4 border-t border-white/[0.07]">
+              <div class="px-2 flex items-center justify-between">
+                <span class="text-[11px] text-[#9E9AA6] uppercase tracking-wider">AI Engine</span>
+                <button data-action="open-settings" class="p-1 rounded-lg text-[#9E9AA6] hover:text-[#F2EFEA] hover:bg-white/[0.05]" title="Settings & Backup">
+                  <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+              <div class="relative">
+                <button data-action="toggle-provider-menu" class="w-full px-3 py-2 rounded-xl glass-pill text-left text-xs flex items-center justify-between hover:bg-white/[0.06] transition">
+                  <span class="truncate text-[#F2EFEA] font-medium">${PROVIDERS[state.aiProvider].name}</span>
+                  <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-[#9E9AA6] shrink-0"></i>
+                </button>
+                ${state.providerMenuOpen ? `
+                  <div class="absolute bottom-full left-0 right-0 mb-1.5 glass-panel p-1.5 space-y-1 z-40">
+                    ${Object.entries(PROVIDERS).map(([key, p]) => `
+                      <button data-select-provider="${key}" class="w-full text-left px-2.5 py-2 rounded-lg text-xs transition ${state.aiProvider === key ? 'bg-white/10 text-white' : 'text-[#9E9AA6] hover:bg-white/5 hover:text-white'}">
+                        <div class="font-medium">${p.name}</div>
+                        <div class="text-[10px] opacity-70">${p.role}</div>
+                      </button>
+                    `).join('')}
+                  </div>
+                ` : ''}
+              </div>
+              <div class="px-2 flex items-center justify-between text-[10px] text-[#9E9AA6]">
+                <span>${state.cloudSyncEnabled ? 'Sync Ready' : 'Saved Locally'}</span>
+                <span>iOS • Web</span>
+              </div>
+            </div>
+          </aside>
+        `;
+      }
+
+      function renderTopBar() {
+        return `
+          <header class="sticky top-0 z-20 border-b border-white/[0.07] bg-[#0B0A0E]/85 backdrop-blur-xl px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5 md:hidden">
+              <div class="w-7 h-7 rounded-lg bg-[#1D1B27] border border-white/10 flex items-center justify-center">
+                <i data-lucide="moon" class="w-3.5 h-3.5 text-[#9D8EC7]"></i>
+              </div>
+              <span class="text-sm font-semibold text-[#F2EFEA]">Nocturne</span>
+            </div>
+
+            <div class="hidden md:flex items-center gap-2 text-xs text-[#9E9AA6]">
+              <span class="capitalize text-[#F2EFEA] font-medium">${state.activeTab === 'applock' ? 'App Lock & Focus' : state.activeTab === 'planner' ? 'Study Plan & Goals' : state.activeTab}</span>
+              <span>/</span>
+              <span>${PROVIDERS[state.aiProvider].name}</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button data-action="open-search" class="glass-pill px-3 py-1.5 rounded-full flex items-center gap-2 text-xs text-[#9E9AA6] hover:text-[#F2EFEA] hover:bg-white/[0.07] transition">
+                <i data-lucide="search" class="w-3.5 h-3.5"></i>
+                <span class="hidden sm:inline">Search</span>
+              </button>
+
+              <button data-action="open-settings" class="md:hidden glass-pill p-1.5 rounded-full text-[#9E9AA6] hover:text-[#F2EFEA]" title="Settings">
+                <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i>
+              </button>
+
+              <button data-action="toggle-ambient" class="glass-pill p-1.5 rounded-full flex items-center justify-center transition ${state.ambientOn ? 'text-[#5E9E84] border-[#5E9E84]/35' : 'text-[#9E9AA6] hover:text-[#F2EFEA]'}" title="Ambient Brown Noise">
+                <i data-lucide="${state.ambientOn ? 'volume-2' : 'volume-x'}" class="w-3.5 h-3.5"></i>
+              </button>
+
+              <div class="glass-pill rounded-full flex items-center p-0.5">
+                <button data-action="toggle-timer" class="px-2.5 py-1 rounded-full flex items-center gap-1.5 text-xs font-mono-num hover:bg-white/[0.06] transition">
+                  <i data-lucide="${state.timerRunning ? 'pause' : 'play'}" class="w-3 h-3 text-[#9D8EC7]"></i>
+                  <span id="header-timer-text" class="text-[#F2EFEA]">${formatTimer(state.timerSeconds)}</span>
+                </button>
+                <button data-preset-timer="${state.timerPreset === 25 ? 50 : state.timerPreset === 50 ? 15 : 25}" class="hidden sm:inline px-2 py-1 text-[10px] font-mono-num text-[#9E9AA6] hover:text-[#F2EFEA]" title="Switch Pomodoro Preset">
+                  ${state.timerPreset}m
+                </button>
+              </div>
+
+              <button data-action="lock-screen" class="glass-pill px-3 py-1.5 rounded-full flex items-center gap-1.5 text-xs text-[#F2EFEA] hover:bg-white/[0.07] transition" title="Lock Workspace">
+                <i data-lucide="lock" class="w-3.5 h-3.5 text-[#9E9AA6]"></i>
+                <span class="hidden sm:inline">Lock</span>
+              </button>
+            </div>
+          </header>
+        `;
+      }
+
+      function renderMobileNav() {
+        return `
+          <nav class="md:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-white/[0.08] bg-[#0E0D13]/95 backdrop-blur-xl px-1 pt-1.5 pb-safe flex items-center justify-around overflow-x-auto no-scrollbar">
+            ${NAV_ITEMS.map(item => {
+              const active = state.activeTab === item.id;
+              return `
+                <button data-tab="${item.id}" class="shrink-0 flex flex-col items-center gap-0.5 px-2 py-1 rounded-xl text-[10px] ${active ? 'text-[#F2EFEA]' : 'text-[#9E9AA6]'}">
+                  <i data-lucide="${item.icon}" class="w-4 h-4 ${active ? 'text-[#9D8EC7]' : ''}"></i>
+                  <span>${item.label}</span>
+                </button>
+              `;
+            }).join('')}
+          </nav>
+        `;
+      }
+
+      function renderDashboard() {
+        const activePdf = state.pdfs.find(p => p.id === state.selectedPdfId) || state.pdfs[0];
+        const dueCount = state.flashcards.filter(c => !c.mastered).length;
+        const mastery = getMasteryPct();
+        const quizScore = getQuizScore();
+        const todayBlocks = state.timetableBlocks.filter(b => b.day === state.timetableDay);
+
+        return `
+          <div class="space-y-5">
+            <div class="glass-panel p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-5">
+              ${activePdf ? `
+                <div class="space-y-2 max-w-xl">
+                  <div class="text-xs font-medium text-[#9E9AA6]">Active Document</div>
+                  <h1 class="text-xl sm:text-2xl font-semibold text-[#F2EFEA] tracking-tight">${escapeHtml(activePdf.title)}</h1>
+                  <p class="text-xs sm:text-sm text-[#9E9AA6]">${escapeHtml(activePdf.course)} • ${activePdf.sizeLabel || 'PDF'} • ${activePdf.highlights.length} highlights</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2.5">
+                  <button data-tab="pdfs" class="px-4 py-2.5 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold flex items-center gap-2 transition">
+                    <i data-lucide="book-open" class="w-4 h-4"></i>
+                    <span>Open PDF</span>
+                  </button>
+                  <button data-tab="notes" class="px-4 py-2.5 rounded-xl glass-pill hover:bg-white/[0.07] text-[#F2EFEA] text-xs font-medium flex items-center gap-2 transition">
+                    <i data-lucide="file-text" class="w-4 h-4 text-[#9D8EC7]"></i>
+                    <span>Open Notes</span>
+                  </button>
+                </div>
+              ` : `
+                <div class="space-y-1.5 max-w-xl">
+                  <div class="text-xs font-medium text-[#9E9AA6]">Workspace Ready</div>
+                  <h1 class="text-xl sm:text-2xl font-semibold text-[#F2EFEA] tracking-tight">Your Study Workspace is Clean</h1>
+                  <p class="text-xs sm:text-sm text-[#9E9AA6]">Import a PDF from your device, write your first note, or set up your study timetable. All data is saved locally on your device.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2.5">
+                  <button data-action="trigger-pdf-upload" class="px-4 py-2.5 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold flex items-center gap-2 transition">
+                    <i data-lucide="upload" class="w-4 h-4"></i>
+                    <span>Import PDF</span>
+                  </button>
+                  <button data-action="create-first-note" class="px-4 py-2.5 rounded-xl glass-pill hover:bg-white/[0.07] text-[#F2EFEA] text-xs font-medium flex items-center gap-2 transition">
+                    <i data-lucide="plus" class="w-4 h-4 text-[#9D8EC7]"></i>
+                    <span>New Note</span>
+                  </button>
+                </div>
+              `}
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div class="glass-panel p-5 flex flex-col justify-between gap-4">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-[#9E9AA6]">Flashcards</span>
+                  <span class="px-2 py-0.5 rounded-full text-[11px] font-mono-num bg-[#C2A26C]/15 text-[#D8BE8F]">${dueCount} due</span>
+                </div>
+                <div>
+                  <div class="text-3xl font-semibold font-mono-num text-[#F2EFEA]">${mastery}%</div>
+                  <p class="text-xs text-[#9E9AA6] mt-1">${state.flashcards.length} cards in your decks</p>
+                </div>
+                <button data-tab="flashcards" class="w-full py-2.5 rounded-xl glass-pill hover:bg-white/[0.07] text-xs font-medium text-[#F2EFEA] flex items-center justify-center gap-2 transition">
+                  <span>Open Flashcards</span>
+                  <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+
+              <div class="glass-panel p-5 flex flex-col justify-between gap-4">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-[#9E9AA6]">Quizzes</span>
+                  <span class="px-2 py-0.5 rounded-full text-[11px] font-mono-num bg-[#5E9E84]/15 text-[#96C7B2]">${quizScore}% avg</span>
+                </div>
+                <div>
+                  <div class="text-3xl font-semibold font-mono-num text-[#F2EFEA]">${state.quizQuestions.length}</div>
+                  <p class="text-xs text-[#9E9AA6] mt-1">Questions created</p>
+                </div>
+                <button data-tab="quizzes" class="w-full py-2.5 rounded-xl glass-pill hover:bg-white/[0.07] text-xs font-medium text-[#F2EFEA] flex items-center justify-center gap-2 transition">
+                  <span>Open Quizzes</span>
+                  <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+
+              <div class="glass-panel p-5 flex flex-col justify-between gap-4">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-[#9E9AA6]">App Lock & Focus</span>
+                  <span class="px-2 py-0.5 rounded-full text-[11px] font-mono-num ${state.focusLockActive ? 'bg-[#5E9E84]/15 text-[#96C7B2]' : 'bg-white/[0.06] text-[#9E9AA6]'}">${state.focusLockActive ? 'ACTIVE' : 'STANDBY'}</span>
+                </div>
+                <div>
+                  <div class="text-sm font-medium text-[#F2EFEA]">${state.blockedApps.filter(a => a.blocked).length} Apps Configured</div>
+                  <p class="text-xs text-[#9E9AA6] mt-1">${state.studyMinutesLogged} min focused this session</p>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <button data-action="toggle-focus-lock" class="py-2.5 rounded-xl border text-xs font-medium transition ${state.focusLockActive ? 'bg-[#B8737D]/15 border-[#B8737D]/30 text-[#E5B8BF]' : 'bg-white/[0.08] border-white/10 text-[#F2EFEA] hover:bg-white/[0.12]'}">
+                    ${state.focusLockActive ? 'Disable' : 'Start Focus'}
+                  </button>
+                  <button data-tab="applock" class="py-2.5 rounded-xl glass-pill hover:bg-white/[0.07] text-xs font-medium text-[#F2EFEA] transition">
+                    Settings
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="glass-panel p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h2 class="text-sm font-semibold text-[#F2EFEA]">${state.timetableDay} Timetable</h2>
+                  <p class="text-xs text-[#9E9AA6]">Your scheduled classes and study blocks</p>
+                </div>
+                <button data-tab="timetable" class="text-xs text-[#9D8EC7] hover:text-[#F2EFEA] font-medium flex items-center gap-1 transition">
+                  <span>Manage Schedule</span>
+                  <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+              ${todayBlocks.length ? `
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  ${todayBlocks.map(b => `
+                    <div class="glass-inset p-3.5 flex flex-col gap-1.5">
+                      <div class="flex items-center justify-between text-[11px] font-mono-num text-[#9E9AA6]">
+                        <span>${b.start} – ${b.end}</span>
+                        ${b.autoLock ? '<span class="text-[#5E9E84] flex items-center gap-1"><i data-lucide="shield" class="w-3 h-3"></i>Auto-Lock</span>' : ''}
+                      </div>
+                      <div class="text-sm font-medium text-[#F2EFEA]">${escapeHtml(b.title)}</div>
+                      <span class="text-[11px] capitalize text-[#9D8EC7]">${b.type}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : `
+                <div class="glass-inset p-6 text-center text-xs text-[#9E9AA6]">
+                  No blocks scheduled for ${state.timetableDay}. Add classes or study blocks in Timetable.
+                </div>
+              `}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderNotes() {
+        const filtered = state.notes.filter(n =>
+          n.title.toLowerCase().includes(state.noteSearch.toLowerCase()) ||
+          n.course.toLowerCase().includes(state.noteSearch.toLowerCase())
+        );
+        const note = state.notes.find(n => n.id === state.selectedNoteId) || state.notes[0];
+
+        return `
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div class="lg:col-span-4 glass-panel p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <h2 class="text-sm font-semibold text-[#F2EFEA]">Notes</h2>
+                <button data-action="new-note" class="px-2.5 py-1 rounded-lg glass-pill text-xs text-[#F2EFEA] hover:bg-white/[0.08] transition">+ New</button>
+              </div>
+              <input id="note-search-input" type="text" value="${escapeHtml(state.noteSearch)}" placeholder="Filter notes..." class="w-full px-3 py-2 rounded-xl glass-inset text-xs text-[#F2EFEA] placeholder-[#9E9AA6] focus:outline-none focus:border-white/20" />
+              <div class="space-y-2">
+                ${filtered.length ? filtered.map(n => `
+                  <button data-select-note="${n.id}" class="w-full text-left p-3 rounded-xl border transition ${note && n.id === note.id ? 'bg-white/[0.08] border-white/15' : 'bg-white/[0.02] border-transparent hover:bg-white/[0.05]'}">
+                    <div class="text-sm font-medium text-[#F2EFEA] truncate">${escapeHtml(n.title || 'Untitled Note')}</div>
+                    <div class="text-[11px] text-[#9E9AA6] mt-0.5 flex items-center justify-between">
+                      <span>${escapeHtml(n.course)}</span>
+                      <span>${n.updated}</span>
+                    </div>
+                  </button>
+                `).join('') : `<div class="py-8 text-center text-xs text-[#9E9AA6]">No notes yet. Click + New to start writing.</div>`}
+              </div>
+            </div>
+
+            <div class="lg:col-span-8 glass-panel p-5 space-y-4">
+              ${note ? `
+                <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3.5">
+                  <div class="flex-1 min-w-[200px] space-y-1">
+                    <input id="note-title-input" type="text" value="${escapeHtml(note.title)}" placeholder="Note title" class="w-full bg-transparent text-lg font-semibold text-[#F2EFEA] focus:outline-none" />
+                    <input id="note-course-input" type="text" value="${escapeHtml(note.course)}" placeholder="Course or subject" class="w-full bg-transparent text-xs text-[#9E9AA6] focus:outline-none" />
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button data-action="export-note" class="px-3 py-1.5 rounded-xl glass-pill text-xs text-[#9E9AA6] hover:text-[#F2EFEA] transition flex items-center gap-1.5">
+                      <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                      <span>Copy MD</span>
+                    </button>
+                    <button data-action="note-to-cards" class="px-3 py-1.5 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold transition flex items-center gap-1.5">
+                      <i data-lucide="layers" class="w-3.5 h-3.5"></i>
+                      <span>Create Card</span>
+                    </button>
+                    <button data-delete-note="${note.id}" class="p-1.5 rounded-xl glass-pill text-[#9E9AA6] hover:text-[#E5B8BF]" title="Delete Note">
+                      <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                  </div>
+                </div>
+                <textarea id="note-body-input" rows="13" placeholder="Write your study notes here..." class="w-full glass-inset p-4 text-sm text-[#E4E0EC] leading-relaxed focus:outline-none focus:border-white/20">${escapeHtml(note.content)}</textarea>
+              ` : `
+                <div class="py-16 text-center space-y-3">
+                  <p class="text-sm text-[#9E9AA6]">Select a note or create a new one.</p>
+                  <button data-action="new-note" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Create First Note</button>
+                </div>
+              `}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderPdfs() {
+        const pdf = state.pdfs.find(p => p.id === state.selectedPdfId) || state.pdfs[0];
+        const activeBlobUrl = pdf ? pdfBlobUrls[pdf.id] : null;
+
+        return `
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div class="lg:col-span-4 glass-panel p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <h2 class="text-sm font-semibold text-[#F2EFEA]">PDF Library</h2>
+                <button data-action="trigger-pdf-upload" class="px-2.5 py-1 rounded-lg glass-pill text-xs text-[#F2EFEA] hover:bg-white/[0.08] transition">+ Import PDF</button>
+              </div>
+              <div class="space-y-2">
+                ${state.pdfs.length ? state.pdfs.map(p => `
+                  <button data-select-pdf="${p.id}" class="w-full text-left p-3.5 rounded-xl border transition ${pdf && p.id === pdf.id ? 'bg-white/[0.08] border-white/15' : 'bg-white/[0.02] border-transparent hover:bg-white/[0.05]'}">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-sm font-medium text-[#F2EFEA] truncate">${escapeHtml(p.title)}</span>
+                      <span class="text-[11px] font-mono-num text-[#96C7B2]">${escapeHtml(p.sizeLabel || 'PDF')}</span>
+                    </div>
+                    <div class="text-[11px] text-[#9E9AA6] mt-1">${escapeHtml(p.course)} • ${p.highlights.length} notes</div>
+                  </button>
+                `).join('') : `<div class="py-8 text-center text-xs text-[#9E9AA6]">No PDFs imported yet. Tap + Import PDF to open a file from your device.</div>`}
+              </div>
+
+              ${pdf ? `
+                <div class="pt-3 border-t border-white/[0.07] space-y-2">
+                  <div class="text-xs font-medium text-[#9E9AA6]">Saved Highlights & Notes</div>
+                  <div class="flex gap-2">
+                    <input id="pdf-highlight-input" type="text" placeholder="Add page note or highlight..." class="flex-1 px-3 py-2 rounded-xl glass-inset text-xs text-[#F2EFEA] focus:outline-none" />
+                    <button data-action="pdf-add-highlight" class="px-3 py-2 rounded-xl glass-pill text-xs text-[#F2EFEA] hover:bg-white/[0.08]">Add</button>
+                  </div>
+                  ${pdf.highlights.map(h => `
+                    <div class="p-2.5 rounded-xl bg-[#C2A26C]/10 border border-[#C2A26C]/20 text-xs text-[#E8D8BC] leading-relaxed">${escapeHtml(h)}</div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="lg:col-span-8 glass-panel p-5 space-y-4">
+              ${pdf ? `
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.07] pb-3.5">
+                  <div>
+                    <h3 class="text-sm font-semibold text-[#F2EFEA]">${escapeHtml(pdf.title)}</h3>
+                    <p class="text-xs text-[#9E9AA6]">${escapeHtml(pdf.course)}</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button data-action="trigger-pdf-upload" class="px-3 py-1.5 rounded-lg glass-pill text-xs text-[#F2EFEA]">Attach File</button>
+                    <button data-delete-pdf="${pdf.id}" class="p-1.5 rounded-lg glass-pill text-[#9E9AA6] hover:text-[#E5B8BF]" title="Remove PDF">
+                      <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                  </div>
+                </div>
+                ${activeBlobUrl ? `
+                  <iframe src="${activeBlobUrl}" class="w-full h-[480px] rounded-2xl border border-white/10 bg-[#121118]" title="PDF Viewer"></iframe>
+                ` : `
+                  <div class="glass-inset p-10 text-center space-y-3">
+                    <i data-lucide="file-up" class="w-8 h-8 text-[#9E9AA6] mx-auto"></i>
+                    <div class="text-sm font-medium text-[#F2EFEA]">Re-attach "${escapeHtml(pdf.title)}" to view pages</div>
+                    <p class="text-xs text-[#9E9AA6] max-w-md mx-auto">For privacy and storage efficiency on iOS, your highlights stay saved locally while the raw PDF binary is loaded on demand from your Files app.</p>
+                    <button data-action="trigger-pdf-upload" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Select PDF File</button>
+                  </div>
+                `}
+              ` : `
+                <div class="py-16 text-center space-y-3">
+                  <i data-lucide="book-open" class="w-8 h-8 text-[#9E9AA6] mx-auto"></i>
+                  <div class="text-sm font-medium text-[#F2EFEA]">No PDF Selected</div>
+                  <p class="text-xs text-[#9E9AA6]">Import a PDF from your iPhone, iPad, or computer to read and annotate.</p>
+                  <button data-action="trigger-pdf-upload" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Import PDF</button>
+                </div>
+              `}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderFlashcards() {
+        const decks = ['All', ...Array.from(new Set(state.flashcards.map(c => c.deck)))];
+        const cards = getFilteredCards();
+        const safeIdx = cards.length ? state.cardIndex % cards.length : 0;
+        const card = cards[safeIdx];
+
+        return `
+          <div class="max-w-3xl mx-auto space-y-5">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                ${decks.map(d => `
+                  <button data-select-deck="${escapeHtml(d)}" class="px-3 py-1.5 rounded-full text-xs font-medium transition ${state.selectedDeck === d ? 'bg-[#F2EFEA] text-[#0B0A0E]' : 'glass-pill text-[#9E9AA6] hover:text-[#F2EFEA]'}">${escapeHtml(d)}</button>
+                `).join('')}
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs font-mono-num text-[#9E9AA6]">${cards.length ? safeIdx + 1 : 0} / ${cards.length} • ${getMasteryPct()}%</span>
+                <button data-action="open-card-modal" class="px-3 py-1.5 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">+ Add Card</button>
+              </div>
+            </div>
+
+            ${card ? `
+              <div class="card-scene">
+                <button data-action="flip-card" class="w-full text-left focus:outline-none">
+                  <div class="card-inner ${state.cardFlipped ? 'is-flipped' : ''} min-h-[260px]">
+                    <div class="card-face glass-panel p-8 sm:p-10 min-h-[260px] flex flex-col justify-between">
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="px-2.5 py-1 rounded-full bg-white/[0.06] text-[#9D8EC7] font-medium">${escapeHtml(card.deck)}</span>
+                        <span class="font-mono-num text-[#9E9AA6]">QUESTION</span>
+                      </div>
+                      <div class="py-6 text-center text-lg sm:text-xl font-medium text-[#F2EFEA] leading-relaxed">${escapeHtml(card.front)}</div>
+                      <div class="text-center text-[11px] font-mono-num text-[#9E9AA6]">Tap to reveal • Interval: ${card.interval}</div>
+                    </div>
+                    <div class="card-face card-face-back glass-panel p-8 sm:p-10 min-h-[260px] flex flex-col justify-between absolute inset-0 border-white/15">
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="px-2.5 py-1 rounded-full bg-[#5E9E84]/15 text-[#96C7B2] font-medium">${escapeHtml(card.deck)}</span>
+                        <span class="font-mono-num text-[#96C7B2]">ANSWER</span>
+                      </div>
+                      <div class="py-6 text-center text-lg sm:text-xl font-medium text-[#F2EFEA] leading-relaxed">${escapeHtml(card.back)}</div>
+                      <div class="text-center text-[11px] font-mono-num text-[#9E9AA6]">Rate recall below</div>
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              <div class="grid grid-cols-4 gap-2.5">
+                <button data-rate-card="again" class="py-3 rounded-2xl bg-[#B8737D]/15 border border-[#B8737D]/25 text-xs font-medium text-[#E5B8BF] hover:bg-[#B8737D]/25 transition">Again <span class="block text-[10px] font-mono-num opacity-75">1m</span></button>
+                <button data-rate-card="hard" class="py-3 rounded-2xl bg-[#C2A26C]/15 border border-[#C2A26C]/25 text-xs font-medium text-[#E8D8BC] hover:bg-[#C2A26C]/25 transition">Hard <span class="block text-[10px] font-mono-num opacity-75">10m</span></button>
+                <button data-rate-card="good" class="py-3 rounded-2xl bg-[#9D8EC7]/15 border border-[#9D8EC7]/25 text-xs font-medium text-[#D6CEED] hover:bg-[#9D8EC7]/25 transition">Good <span class="block text-[10px] font-mono-num opacity-75">2d</span></button>
+                <button data-rate-card="easy" class="py-3 rounded-2xl bg-[#5E9E84]/15 border border-[#5E9E84]/25 text-xs font-medium text-[#B3DEC9] hover:bg-[#5E9E84]/25 transition">Easy <span class="block text-[10px] font-mono-num opacity-75">5d</span></button>
+              </div>
+            ` : `
+              <div class="glass-panel p-12 text-center space-y-3">
+                <div class="text-sm font-medium text-[#F2EFEA]">No flashcards yet</div>
+                <p class="text-xs text-[#9E9AA6]">Create flashcards manually or convert any note into a card.</p>
+                <button data-action="open-card-modal" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Add First Card</button>
+              </div>
+            `}
+          </div>
+
+          ${state.showAddCardModal ? `
+            <div class="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div class="glass-panel w-full max-w-md p-5 space-y-4">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-base font-semibold text-[#F2EFEA]">New Flashcard</h3>
+                  <button data-action="close-card-modal" class="text-[#9E9AA6] hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div class="space-y-3 text-xs">
+                  <input id="card-deck-input" type="text" placeholder="Deck / Subject name" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <textarea id="card-front-input" rows="2" placeholder="Front (Question)" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none"></textarea>
+                  <textarea id="card-back-input" rows="2" placeholder="Back (Answer)" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none"></textarea>
+                </div>
+                <div class="flex justify-end gap-2">
+                  <button data-action="close-card-modal" class="px-3.5 py-2 rounded-xl glass-pill text-xs text-[#9E9AA6]">Cancel</button>
+                  <button data-action="save-card" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Save Card</button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      function renderQuizzes() {
+        const q = state.quizQuestions.length ? state.quizQuestions[state.quizIndex % state.quizQuestions.length] : null;
+        const chosen = q ? state.quizAnswers[q.id] : undefined;
+        const isAnswered = chosen !== undefined;
+        const letters = ['A', 'B', 'C', 'D'];
+
+        return `
+          <div class="max-w-3xl mx-auto space-y-5">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-[#F2EFEA]">Practice Quizzes</h2>
+              <button data-action="open-quiz-modal" class="px-3 py-1.5 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">+ Add Question</button>
+            </div>
+
+            ${q ? `
+              <div class="glass-panel p-6 space-y-5">
+                <div class="flex items-center justify-between">
+                  <span class="px-2.5 py-1 rounded-full bg-white/[0.06] text-[#9D8EC7] text-xs font-medium">${escapeHtml(q.topic)}</span>
+                  <div class="flex items-center gap-3">
+                    <span class="text-xs font-mono-num text-[#9E9AA6]">Q${state.quizIndex + 1}/${state.quizQuestions.length} • Score ${getQuizScore()}%</span>
+                    <button data-action="reset-quiz" class="text-xs text-[#9E9AA6] hover:text-[#F2EFEA]">Reset</button>
+                  </div>
+                </div>
+
+                <h3 class="text-lg font-semibold text-[#F2EFEA] leading-snug">${escapeHtml(q.question)}</h3>
+
+                <div class="space-y-2.5">
+                  ${q.options.map((opt, idx) => {
+                    let cls = 'glass-inset text-[#E4E0EC] hover:bg-white/[0.06]';
+                    if (isAnswered) {
+                      if (idx === q.correct) cls = 'bg-[#5E9E84]/15 border border-[#5E9E84]/40 text-[#D7EDE2]';
+                      else if (idx === chosen) cls = 'bg-[#B8737D]/15 border border-[#B8737D]/40 text-[#EED0D4]';
+                    }
+                    return `
+                      <button data-answer-quiz="${idx}" class="w-full text-left p-3.5 rounded-xl text-sm transition flex items-center justify-between gap-3 ${cls}">
+                        <div class="flex items-center gap-3">
+                          <span class="w-6 h-6 rounded-lg bg-white/[0.06] flex items-center justify-center text-xs font-mono-num text-[#9E9AA6] shrink-0">${letters[idx]}</span>
+                          <span>${escapeHtml(opt)}</span>
+                        </div>
+                        ${isAnswered && idx === q.correct ? '<i data-lucide="check-circle" class="w-4 h-4 text-[#96C7B2] shrink-0"></i>' : ''}
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+
+                ${isAnswered && q.explanation ? `
+                  <div class="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-1.5">
+                    <div class="text-xs font-medium text-[#C5B9E3]">Explanation</div>
+                    <p class="text-xs text-[#C7C3CF] leading-relaxed">${escapeHtml(q.explanation)}</p>
+                  </div>
+                ` : ''}
+
+                <div class="flex items-center justify-between pt-2">
+                  <button data-action="quiz-prev" class="px-3.5 py-2 rounded-xl glass-pill text-xs text-[#9E9AA6] hover:text-[#F2EFEA]">Previous</button>
+                  <button data-action="quiz-next" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold transition">Next Question</button>
+                </div>
+              </div>
+            ` : `
+              <div class="glass-panel p-12 text-center space-y-3">
+                <div class="text-sm font-medium text-[#F2EFEA]">No quiz questions yet</div>
+                <p class="text-xs text-[#9E9AA6]">Build your own multiple-choice questions to test recall.</p>
+                <button data-action="open-quiz-modal" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Add First Question</button>
+              </div>
+            `}
+          </div>
+
+          ${state.showAddQuizModal ? `
+            <div class="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div class="glass-panel w-full max-w-md p-5 space-y-3.5">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-base font-semibold text-[#F2EFEA]">Add Quiz Question</h3>
+                  <button data-action="close-quiz-modal" class="text-[#9E9AA6] hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div class="space-y-2.5 text-xs">
+                  <input id="quiz-topic-input" type="text" placeholder="Topic / Course" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <textarea id="quiz-question-input" rows="2" placeholder="Question prompt" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none"></textarea>
+                  <input id="quiz-opt-0" type="text" placeholder="Option A" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <input id="quiz-opt-1" type="text" placeholder="Option B" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <input id="quiz-opt-2" type="text" placeholder="Option C" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <input id="quiz-opt-3" type="text" placeholder="Option D" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <select id="quiz-correct-select" class="w-full px-3 py-2 rounded-xl bg-[#121118] border border-white/10 text-[#F2EFEA]">
+                    <option value="0">Correct Answer: A</option>
+                    <option value="1">Correct Answer: B</option>
+                    <option value="2">Correct Answer: C</option>
+                    <option value="3">Correct Answer: D</option>
+                  </select>
+                  <input id="quiz-exp-input" type="text" placeholder="Explanation (optional)" class="w-full px-3 py-2 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                </div>
+                <div class="flex justify-end gap-2">
+                  <button data-action="close-quiz-modal" class="px-3.5 py-2 rounded-xl glass-pill text-xs text-[#9E9AA6]">Cancel</button>
+                  <button data-action="save-quiz" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Save Question</button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      function renderPlanner() {
+        return `
+          <div class="space-y-5">
+            <div class="glass-panel p-5 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 class="text-lg font-semibold text-[#F2EFEA]">Study Plan & Exam Goals</h2>
+                <p class="text-xs text-[#9E9AA6]">Track upcoming exams and syllabus checklists</p>
+              </div>
+              <button data-action="open-exam-modal" class="px-3.5 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold flex items-center gap-1.5">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                <span>Add Exam</span>
+              </button>
+            </div>
+
+            ${state.exams.length ? `
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                ${state.exams.map(ex => {
+                  const doneCount = ex.topics.filter(t => t.done).length;
+                  const pct = ex.topics.length ? Math.round((doneCount / ex.topics.length) * 100) : 0;
+                  return `
+                    <div class="glass-panel p-5 space-y-3.5">
+                      <div class="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 class="text-sm font-semibold text-[#F2EFEA]">${escapeHtml(ex.title)}</h3>
+                          <p class="text-xs text-[#9E9AA6]">${escapeHtml(ex.date)} • ${doneCount}/${ex.topics.length} topics</p>
+                        </div>
+                        <button data-delete-exam="${ex.id}" class="p-1.5 rounded-lg glass-pill text-[#9E9AA6] hover:text-[#E5B8BF]" title="Delete Exam">
+                          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                      <div class="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                        <div class="h-full rounded-full bg-[#5E9E84]" style="width: ${pct}%"></div>
+                      </div>
+                      <div class="space-y-2 pt-1">
+                        ${ex.topics.map(t => `
+                          <label class="flex items-center gap-2.5 p-2.5 rounded-xl glass-inset text-xs cursor-pointer hover:bg-white/[0.04]">
+                            <input type="checkbox" data-toggle-topic="${ex.id}:${t.id}" ${t.done ? 'checked' : ''} class="w-3.5 h-3.5 accent-[#5E9E84]" />
+                            <span class="${t.done ? 'line-through text-[#9E9AA6]' : 'text-[#F2EFEA]'}">${escapeHtml(t.label)}</span>
+                          </label>
+                        `).join('')}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            ` : `
+              <div class="glass-panel p-12 text-center space-y-3">
+                <div class="text-sm font-medium text-[#F2EFEA]">No exams or goals added</div>
+                <p class="text-xs text-[#9E9AA6]">Add an upcoming exam with syllabus topics to track your readiness.</p>
+                <button data-action="open-exam-modal" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Add First Exam</button>
+              </div>
+            `}
+          </div>
+
+          ${state.showAddExamModal ? `
+            <div class="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div class="glass-panel w-full max-w-md p-5 space-y-4">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-base font-semibold text-[#F2EFEA]">Add Exam / Milestone</h3>
+                  <button data-action="close-exam-modal" class="text-[#9E9AA6] hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div class="space-y-3 text-xs">
+                  <input id="exam-title-input" type="text" placeholder="Exam title (e.g., Biology Midterm)" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <input id="exam-date-input" type="date" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <textarea id="exam-topics-input" rows="3" placeholder="Syllabus topics (one per line)" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none"></textarea>
+                </div>
+                <div class="flex justify-end gap-2">
+                  <button data-action="close-exam-modal" class="px-3.5 py-2 rounded-xl glass-pill text-xs text-[#9E9AA6]">Cancel</button>
+                  <button data-action="save-exam" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Save Exam</button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      function renderTimetable() {
+        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const typeStyles = {
+          lecture: 'border-[#9D8EC7]/30 bg-[#9D8EC7]/10 text-[#D6CEED]',
+          study: 'border-[#5E9E84]/30 bg-[#5E9E84]/10 text-[#B3DEC9]',
+          review: 'border-[#C2A26C]/30 bg-[#C2A26C]/10 text-[#E8D8BC]',
+          exam: 'border-[#B8737D]/30 bg-[#B8737D]/10 text-[#E5B8BF]'
+        };
+
+        const dayBlocks = state.timetableBlocks
+          .filter(b => b.day === state.timetableDay)
+          .sort((a, b) => a.start.localeCompare(b.start));
+
+        return `
+          <div class="space-y-5">
+            <div class="glass-panel p-5 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 class="text-lg font-semibold text-[#F2EFEA]">Study Timetable</h2>
+                <p class="text-xs text-[#9E9AA6]">Classes, deep-work blocks, and automated App Lock windows</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="glass-pill p-1 rounded-xl flex items-center text-xs">
+                  <button data-timetable-view="day" class="px-2.5 py-1 rounded-lg ${state.timetableView === 'day' ? 'bg-white/10 text-[#F2EFEA]' : 'text-[#9E9AA6]'}">Day</button>
+                  <button data-timetable-view="week" class="px-2.5 py-1 rounded-lg ${state.timetableView === 'week' ? 'bg-white/10 text-[#F2EFEA]' : 'text-[#9E9AA6]'}">Week</button>
+                </div>
+                <button data-action="open-block-modal" class="px-3.5 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold flex items-center gap-1.5 transition">
+                  <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                  <span>Add Block</span>
+                </button>
+              </div>
+            </div>
+
+            ${state.timetableView === 'day' ? `
+              <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                ${days.map(d => {
+                  const count = state.timetableBlocks.filter(b => b.day === d).length;
+                  return `
+                    <button data-select-day="${d}" class="px-4 py-2 rounded-xl text-xs font-medium flex items-center gap-2 transition ${state.timetableDay === d ? 'bg-[#F2EFEA] text-[#0B0A0E]' : 'glass-pill text-[#9E9AA6] hover:text-[#F2EFEA]'}">
+                      <span>${d}</span>
+                      <span class="font-mono-num text-[10px] opacity-70">${count}</span>
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+
+              <div class="glass-panel p-5 space-y-3">
+                ${dayBlocks.length ? dayBlocks.map(b => `
+                  <div class="p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${typeStyles[b.type] || typeStyles.study}">
+                    <div class="space-y-1">
+                      <div class="flex items-center gap-2 text-xs font-mono-num opacity-85">
+                        <span>${b.start} – ${b.end}</span>
+                        <span class="uppercase px-2 py-0.5 rounded-full bg-black/25 text-[10px]">${b.type}</span>
+                        ${b.autoLock ? '<span class="flex items-center gap-1 text-[#96C7B2]"><i data-lucide="shield" class="w-3 h-3"></i>Focus Lock</span>' : ''}
+                      </div>
+                      <div class="text-sm font-semibold text-[#F2EFEA]">${escapeHtml(b.title)}</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button data-start-block="${b.id}" class="px-3 py-1.5 rounded-xl bg-black/30 hover:bg-black/45 text-xs text-[#F2EFEA] transition">Start Session</button>
+                      <button data-delete-block="${b.id}" class="p-1.5 rounded-xl bg-black/30 hover:bg-[#B8737D]/30 text-[#9E9AA6] hover:text-white transition" title="Remove">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                      </button>
+                    </div>
+                  </div>
+                `).join('') : `
+                  <div class="py-10 text-center text-sm text-[#9E9AA6]">No blocks scheduled for ${state.timetableDay}. Click Add Block to schedule a session.</div>
+                `}
+              </div>
+            ` : `
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                ${days.map(d => {
+                  const list = state.timetableBlocks.filter(b => b.day === d).sort((a, b) => a.start.localeCompare(b.start));
+                  return `
+                    <div class="glass-panel p-4 space-y-2.5">
+                      <div class="flex items-center justify-between border-b border-white/[0.07] pb-2">
+                        <span class="text-xs font-semibold text-[#F2EFEA]">${d}</span>
+                        <span class="text-[11px] font-mono-num text-[#9E9AA6]">${list.length}</span>
+                      </div>
+                      ${list.length ? list.map(b => `
+                        <div class="p-2.5 rounded-xl border text-xs space-y-1 ${typeStyles[b.type] || typeStyles.study}">
+                          <div class="font-mono-num text-[10px] opacity-80">${b.start} – ${b.end}</div>
+                          <div class="font-medium text-[#F2EFEA]">${escapeHtml(b.title)}</div>
+                        </div>
+                      `).join('') : `<div class="text-xs text-[#9E9AA6] py-4 text-center">Open day</div>`}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+          </div>
+
+          ${state.showAddBlockModal ? `
+            <div class="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div class="glass-panel w-full max-w-md p-5 space-y-4">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-base font-semibold text-[#F2EFEA]">Add Timetable Block (${state.timetableDay})</h3>
+                  <button data-action="close-block-modal" class="text-[#9E9AA6] hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+                </div>
+                <div class="space-y-3 text-xs">
+                  <input id="block-title" type="text" placeholder="Session title" class="w-full px-3.5 py-2.5 rounded-xl glass-inset text-[#F2EFEA] focus:outline-none" />
+                  <div class="grid grid-cols-2 gap-2.5">
+                    <input id="block-start" type="time" value="18:00" class="px-3 py-2 rounded-xl glass-inset text-[#F2EFEA]" />
+                    <input id="block-end" type="time" value="19:30" class="px-3 py-2 rounded-xl glass-inset text-[#F2EFEA]" />
+                  </div>
+                  <select id="block-type" class="w-full px-3 py-2.5 rounded-xl bg-[#121118] border border-white/10 text-[#F2EFEA]">
+                    <option value="study">Deep Study</option>
+                    <option value="lecture">Lecture</option>
+                    <option value="review">Flashcard Review</option>
+                    <option value="exam">Exam / Quiz</option>
+                  </select>
+                  <label class="flex items-center gap-2 text-[#C7C3CF] pt-1">
+                    <input id="block-autolock" type="checkbox" checked class="rounded accent-[#9D8EC7]" />
+                    <span>Automatically enable App Focus Lock during this block</span>
+                  </label>
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                  <button data-action="close-block-modal" class="px-3.5 py-2 rounded-xl glass-pill text-xs text-[#9E9AA6]">Cancel</button>
+                  <button data-action="save-block" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Save Block</button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      function renderAppLock() {
+        return `
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div class="glass-panel p-6 space-y-5">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-base font-semibold text-[#F2EFEA] flex items-center gap-2">
+                    <i data-lucide="shield-alert" class="w-4 h-4 text-[#9D8EC7]"></i>
+                    <span>Focus Lock (Distraction Blocker)</span>
+                  </h2>
+                  <p class="text-xs text-[#9E9AA6] mt-0.5">Configure apps to shield during study sessions</p>
+                </div>
+                <button data-action="toggle-focus-lock" class="px-3.5 py-2 rounded-xl text-xs font-semibold transition ${state.focusLockActive ? 'bg-[#B8737D]/20 text-[#E5B8BF] border border-[#B8737D]/30' : 'bg-[#F2EFEA] text-[#0B0A0E]'}">
+                  ${state.focusLockActive ? 'Deactivate' : 'Activate'}
+                </button>
+              </div>
+
+              <div class="space-y-2.5">
+                <label class="flex items-center justify-between p-3.5 rounded-2xl glass-inset text-xs cursor-pointer">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">Strict Mode</div>
+                    <div class="text-[#9E9AA6]">Lock blocked apps until the active study timer finishes</div>
+                  </div>
+                  <input data-toggle-setting="focusLockStrict" type="checkbox" ${state.focusLockStrict ? 'checked' : ''} class="w-4 h-4 accent-[#9D8EC7]" />
+                </label>
+
+                <label class="flex items-center justify-between p-3.5 rounded-2xl glass-inset text-xs cursor-pointer">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">Timetable Auto-Lock</div>
+                    <div class="text-[#9E9AA6]">Automatically engage Focus Lock during scheduled study blocks</div>
+                  </div>
+                  <input data-toggle-setting="autoLockOnTimetable" type="checkbox" ${state.autoLockOnTimetable ? 'checked' : ''} class="w-4 h-4 accent-[#9D8EC7]" />
+                </label>
+              </div>
+
+              <div class="space-y-2">
+                <div class="text-xs font-medium text-[#9E9AA6]">Shielded Apps</div>
+                <div class="grid grid-cols-2 gap-2">
+                  ${state.blockedApps.map(app => `
+                    <button data-toggle-app="${app.id}" class="p-3 rounded-xl border text-left transition flex items-center justify-between ${app.blocked ? 'bg-white/[0.06] border-white/15 text-[#F2EFEA]' : 'bg-white/[0.02] border-transparent text-[#9E9AA6]'}">
+                      <div>
+                        <div class="text-xs font-medium">${escapeHtml(app.name)}</div>
+                        <div class="text-[10px] opacity-70">${escapeHtml(app.category)}</div>
+                      </div>
+                      <i data-lucide="${app.blocked ? 'lock' : 'unlock'}" class="w-3.5 h-3.5 ${app.blocked ? 'text-[#9D8EC7]' : 'text-[#9E9AA6]'}"></i>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            </div>
+
+            <div class="glass-panel p-6 space-y-5">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h2 class="text-base font-semibold text-[#F2EFEA] flex items-center gap-2">
+                    <i data-lucide="fingerprint" class="w-4 h-4 text-[#5E9E84]"></i>
+                    <span>Privacy & Biometric Lock</span>
+                  </h2>
+                  <p class="text-xs text-[#9E9AA6] mt-0.5">Protect your workspace with Face ID, Touch ID, or PIN</p>
+                </div>
+                <button data-action="lock-screen" class="px-3.5 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] hover:bg-white text-xs font-semibold transition">
+                  Lock Now
+                </button>
+              </div>
+
+              <div class="space-y-2.5">
+                <label class="flex items-center justify-between p-3.5 rounded-2xl glass-inset text-xs cursor-pointer">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">Biometric Unlock</div>
+                    <div class="text-[#9E9AA6]">Use Face ID or Touch ID</div>
+                  </div>
+                  <input data-toggle-setting="biometricEnabled" type="checkbox" ${state.biometricEnabled ? 'checked' : ''} class="w-4 h-4 accent-[#5E9E84]" />
+                </label>
+
+                <div class="p-3.5 rounded-2xl glass-inset flex items-center justify-between text-xs">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">Auto-Lock Timeout</div>
+                    <div class="text-[#9E9AA6]">Lock workspace after inactivity</div>
+                  </div>
+                  <select id="autolock-timeout-select" class="px-3 py-1.5 rounded-xl bg-[#121118] border border-white/10 text-[#F2EFEA]">
+                    ${['Immediate', '1 min', '5 min', '15 min'].map(opt => `<option value="${opt}" ${state.autoLockTimeout === opt ? 'selected' : ''}>${opt}</option>`).join('')}
+                  </select>
+                </div>
+
+                <div class="p-3.5 rounded-2xl glass-inset flex items-center justify-between text-xs">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">4-Digit PIN</div>
+                    <div class="text-[#9E9AA6]">Update your lock screen PIN</div>
+                  </div>
+                  <input id="pin-setting-input" type="text" maxlength="4" value="${escapeHtml(state.pinCode)}" class="w-20 text-center px-2.5 py-1.5 rounded-xl bg-[#121118] border border-white/10 text-[#F2EFEA] font-mono-num tracking-widest" />
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSearchModal() {
+        if (!state.searchOpen) return '';
+        const q = state.searchQuery.toLowerCase();
+        const items = [
+          ...state.notes.map(n => ({ type: 'Note', title: n.title || 'Untitled Note', sub: n.course, tab: 'notes', id: n.id })),
+          ...state.pdfs.map(p => ({ type: 'PDF', title: p.title, sub: p.course, tab: 'pdfs', id: p.id })),
+          ...state.timetableBlocks.map(b => ({ type: 'Timetable', title: b.title, sub: `${b.day} ${b.start}`, tab: 'timetable', id: b.id }))
+        ].filter(i => !q || i.title.toLowerCase().includes(q) || i.sub.toLowerCase().includes(q)).slice(0, 7);
+
+        return `
+          <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-start justify-center pt-20 p-4">
+            <div class="glass-panel w-full max-w-lg p-4 space-y-3 border-white/15">
+              <div class="flex items-center gap-2.5 border-b border-white/[0.08] pb-2.5">
+                <i data-lucide="search" class="w-4 h-4 text-[#9E9AA6]"></i>
+                <input id="global-search-input" type="text" value="${escapeHtml(state.searchQuery)}" placeholder="Search your notes, PDFs, or timetable..." class="flex-1 bg-transparent text-sm text-[#F2EFEA] focus:outline-none" />
+                <button data-action="close-search" class="text-xs text-[#9E9AA6] hover:text-white">Esc</button>
+              </div>
+              <div class="space-y-1 max-h-64 overflow-y-auto">
+                ${items.length ? items.map(i => `
+                  <button data-jump-item="${i.tab}:${i.id}" class="w-full text-left px-3 py-2.5 rounded-xl hover:bg-white/[0.06] flex items-center justify-between text-xs transition">
+                    <div>
+                      <div class="font-medium text-[#F2EFEA]">${escapeHtml(i.title)}</div>
+                      <div class="text-[11px] text-[#9E9AA6]">${escapeHtml(i.sub)}</div>
+                    </div>
+                    <span class="px-2 py-0.5 rounded-full bg-white/[0.06] text-[10px] text-[#9D8EC7]">${i.type}</span>
+                  </button>
+                `).join('') : '<div class="py-6 text-center text-xs text-[#9E9AA6]">No matching items yet.</div>'}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSettingsModal() {
+        if (!state.settingsOpen) return '';
+        return `
+          <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="glass-panel w-full max-w-lg p-6 space-y-5 border-white/15">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-base font-semibold text-[#F2EFEA]">AI Engine, Backup & iOS Setup</h3>
+                  <p class="text-xs text-[#9E9AA6]">All workspace data saves locally on your device</p>
+                </div>
+                <button data-action="close-settings" class="text-[#9E9AA6] hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+              </div>
+
+              <div class="space-y-3 text-xs">
+                <div class="p-3 rounded-xl glass-inset flex items-center justify-between">
+                  <span class="text-[#F2EFEA]">Active AI Provider</span>
+                  <select data-route-key="activeProvider" class="px-2.5 py-1.5 rounded-lg bg-[#121118] border border-white/10 text-[#F2EFEA]">
+                    ${Object.entries(PROVIDERS).map(([k, p]) => `<option value="${k}" ${state.aiProvider === k ? 'selected' : ''}>${p.name}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="p-3 rounded-xl glass-inset flex items-center justify-between">
+                  <span class="text-[#F2EFEA]">Local Ollama Endpoint</span>
+                  <input id="ollama-url-input" type="text" value="${escapeHtml(state.ollamaUrl)}" class="w-48 px-2.5 py-1 rounded-lg bg-[#121118] border border-white/10 text-[#F2EFEA] font-mono-num text-[11px]" />
+                </div>
+                <div class="p-3 rounded-xl glass-inset flex items-center justify-between gap-2">
+                  <div>
+                    <div class="font-medium text-[#F2EFEA]">Backup & Restore</div>
+                    <div class="text-[11px] text-[#9E9AA6]">Export or import your workspace JSON</div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button data-action="export-json" class="px-2.5 py-1.5 rounded-lg glass-pill text-[#F2EFEA]">Export</button>
+                    <button data-action="trigger-json-import" class="px-2.5 py-1.5 rounded-lg glass-pill text-[#F2EFEA]">Import</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex justify-end">
+                <button data-action="close-settings" class="px-4 py-2 rounded-xl bg-[#F2EFEA] text-[#0B0A0E] text-xs font-semibold">Done</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderLockOverlay() {
+        if (!state.screenLocked) return '';
+        return `
+          <div class="fixed inset-0 z-50 bg-[#0B0A0E]/92 backdrop-blur-2xl flex items-center justify-center p-4">
+            <div class="glass-panel w-full max-w-sm p-6 text-center space-y-5 border-white/15">
+              <div class="w-12 h-12 mx-auto rounded-2xl bg-white/[0.06] border border-white/10 flex items-center justify-center">
+                <i data-lucide="lock" class="w-5 h-5 text-[#9D8EC7]"></i>
+              </div>
+              <div>
+                <h2 class="text-lg font-semibold text-[#F2EFEA]">Nocturne Locked</h2>
+                <p class="text-xs text-[#9E9AA6] mt-1">Enter your 4-digit PIN or use Biometric Unlock</p>
+              </div>
+
+              <div class="flex justify-center gap-3">
+                ${[0, 1, 2, 3].map(i => `
+                  <div class="w-3 h-3 rounded-full border ${i < state.pinInput.length ? 'bg-[#F2EFEA] border-[#F2EFEA]' : 'border-white/25'}"></div>
+                `).join('')}
+              </div>
+              ${state.pinError ? '<p class="text-xs text-[#E5B8BF]">Incorrect PIN</p>' : ''}
+
+              <div class="grid grid-cols-3 gap-2.5 max-w-[240px] mx-auto">
+                ${['1','2','3','4','5','6','7','8','9','clear','0','del'].map(k => `
+                  <button data-pin-key="${k}" class="py-3 rounded-2xl bg-white/[0.05] hover:bg-white/[0.1] text-sm font-mono-num text-[#F2EFEA] flex items-center justify-center transition">
+                    ${k === 'clear' ? 'C' : k === 'del' ? '<i data-lucide="delete" class="w-4 h-4"></i>' : k}
+                  </button>
+                `).join('')}
+              </div>
+
+              ${state.biometricEnabled ? `
+                <button data-action="biometric-unlock" class="w-full py-2.5 rounded-xl bg-[#5E9E84]/15 border border-[#5E9E84]/30 text-xs font-medium text-[#D7EDE2] hover:bg-[#5E9E84]/25 flex items-center justify-center gap-2 transition">
+                  <i data-lucide="fingerprint" class="w-4 h-4"></i>
+                  <span>Unlock with Face ID / Touch ID</span>
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }
+
+      function render() {
+        const root = document.getElementById('app');
+        if (!root) return;
+
+        let mainContent = '';
+        if (state.activeTab === 'dashboard') mainContent = renderDashboard();
+        else if (state.activeTab === 'notes') mainContent = renderNotes();
+        else if (state.activeTab === 'pdfs') mainContent = renderPdfs();
+        else if (state.activeTab === 'flashcards') mainContent = renderFlashcards();
+        else if (state.activeTab === 'quizzes') mainContent = renderQuizzes();
+        else if (state.activeTab === 'planner') mainContent = renderPlanner();
+        else if (state.activeTab === 'timetable') mainContent = renderTimetable();
+        else if (state.activeTab === 'applock') mainContent = renderAppLock();
+
+        root.innerHTML = `
+          <div class="flex flex-1 min-h-screen">
+            ${renderSidebar()}
+            <div class="flex-1 flex flex-col min-w-0">
+              ${renderTopBar()}
+              <main class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-6 pb-24 md:pb-10">
+                ${mainContent}
+              </main>
+            </div>
+          </div>
+          ${renderMobileNav()}
+          ${renderSearchModal()}
+          ${renderSettingsModal()}
+          ${renderLockOverlay()}
+        `;
+
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          window.lucide.createIcons();
+        }
+        bindInputs();
+      }
+
+      function bindInputs() {
+        const searchEl = document.getElementById('note-search-input');
+        if (searchEl) {
+          searchEl.addEventListener('input', (e) => {
+            state.noteSearch = e.target.value;
+            render();
+            const again = document.getElementById('note-search-input');
+            if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+          });
+        }
+        const globalSearch = document.getElementById('global-search-input');
+        if (globalSearch) {
+          globalSearch.focus();
+          globalSearch.setSelectionRange(globalSearch.value.length, globalSearch.value.length);
+          globalSearch.addEventListener('input', (e) => {
+            state.searchQuery = e.target.value;
+            render();
+          });
+        }
+        const titleEl = document.getElementById('note-title-input');
+        if (titleEl) {
+          titleEl.addEventListener('input', (e) => {
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) { note.title = e.target.value; note.updated = 'Just now'; saveState(); }
+          });
+        }
+        const courseEl = document.getElementById('note-course-input');
+        if (courseEl) {
+          courseEl.addEventListener('input', (e) => {
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) { note.course = e.target.value; note.updated = 'Just now'; saveState(); }
+          });
+        }
+        const bodyEl = document.getElementById('note-body-input');
+        if (bodyEl) {
+          bodyEl.addEventListener('input', (e) => {
+            const note = state.notes.find(n => n.id === state.selectedNoteId);
+            if (note) { note.content = e.target.value; note.updated = 'Just now'; saveState(); }
+          });
+        }
+        const timeoutEl = document.getElementById('autolock-timeout-select');
+        if (timeoutEl) {
+          timeoutEl.addEventListener('change', (e) => {
+            state.autoLockTimeout = e.target.value;
+            saveState();
+            showToast(`Auto-lock timeout set to ${state.autoLockTimeout}`);
+          });
+        }
+        const pinEl = document.getElementById('pin-setting-input');
+        if (pinEl) {
+          pinEl.addEventListener('input', (e) => {
+            const clean = e.target.value.replace(/\D/g, '').slice(0, 4);
+            e.target.value = clean;
+            if (clean.length === 4) {
+              state.pinCode = clean;
+              saveState();
+              showToast('PIN updated');
+            }
+          });
+        }
+        const ollamaEl = document.getElementById('ollama-url-input');
+        if (ollamaEl) {
+          ollamaEl.addEventListener('input', (e) => { state.ollamaUrl = e.target.value; saveState(); });
+        }
+        document.querySelectorAll('[data-route-key]').forEach(sel => {
+          sel.addEventListener('change', (e) => {
+            if (sel.dataset.routeKey === 'activeProvider') {
+              state.aiProvider = e.target.value;
+              saveState();
+              showToast(`Active AI set to ${PROVIDERS[e.target.value].name}`);
+            }
+          });
+        });
+      }
+
+      // Real PDF file upload handler
+      const pdfInput = document.getElementById('pdf-file-input');
+      if (pdfInput) {
+        pdfInput.addEventListener('change', (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          const id = 'p' + Date.now();
+          const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+          pdfBlobUrls[id] = URL.createObjectURL(file);
+          const existing = state.pdfs.find(p => p.title === file.name);
+          if (existing) {
+            pdfBlobUrls[existing.id] = pdfBlobUrls[id];
+            state.selectedPdfId = existing.id;
+          } else {
+            state.pdfs.unshift({
+              id,
+              title: file.name,
+              course: 'Imported PDF',
+              sizeLabel: sizeMb,
+              highlights: []
+            });
+            state.selectedPdfId = id;
+          }
+          state.activeTab = 'pdfs';
+          saveState();
+          showToast(`Loaded "${file.name}"`);
+          e.target.value = '';
+          render();
+        });
+      }
+
+      // JSON backup import handler
+      const jsonInput = document.getElementById('json-import-input');
+      if (jsonInput) {
+        jsonInput.addEventListener('change', (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const data = JSON.parse(reader.result);
+              Object.keys(defaultPersisted).forEach(k => {
+                if (data[k] !== undefined) state[k] = data[k];
+              });
+              state.selectedNoteId = state.notes[0]?.id || null;
+              state.selectedPdfId = state.pdfs[0]?.id || null;
+              saveState();
+              showToast('Workspace restored from backup');
+              render();
+            } catch (err) {
+              showToast('Invalid backup file');
+            }
+          };
+          reader.readAsText(file);
+          e.target.value = '';
+        });
+      }
+
+      document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          state.searchOpen = !state.searchOpen;
+          state.searchQuery = '';
+          render();
+        } else if (e.key === 'Escape' && state.searchOpen) {
+          state.searchOpen = false;
+          render();
+        }
+      });
+
+      document.addEventListener('click', (e) => {
+        const target = e.target.closest('button, [data-toggle-setting], [data-toggle-topic]');
+        if (!target) return;
+
+        if (target.dataset.tab) { state.activeTab = target.dataset.tab; state.providerMenuOpen = false; render(); return; }
+        if (target.dataset.selectNote) { state.selectedNoteId = target.dataset.selectNote; render(); return; }
+        if (target.dataset.selectPdf) { state.selectedPdfId = target.dataset.selectPdf; render(); return; }
+        if (target.dataset.selectDeck) { state.selectedDeck = target.dataset.selectDeck; state.cardIndex = 0; state.cardFlipped = false; render(); return; }
+        if (target.dataset.timetableView) { state.timetableView = target.dataset.timetableView; render(); return; }
+        if (target.dataset.selectDay) { state.timetableDay = target.dataset.selectDay; render(); return; }
+        if (target.dataset.presetTimer) { setTimerPreset(Number(target.dataset.presetTimer)); return; }
+
+        if (target.dataset.jumpItem) {
+          const [tab, id] = target.dataset.jumpItem.split(':');
+          state.activeTab = tab;
+          if (tab === 'notes') state.selectedNoteId = id;
+          if (tab === 'pdfs') state.selectedPdfId = id;
+          state.searchOpen = false;
+          render();
+          return;
+        }
+
+        if (target.dataset.deleteNote) {
+          state.notes = state.notes.filter(n => n.id !== target.dataset.deleteNote);
+          state.selectedNoteId = state.notes[0]?.id || null;
+          saveState();
+          showToast('Note deleted');
+          render();
+          return;
+        }
+
+        if (target.dataset.deletePdf) {
+          state.pdfs = state.pdfs.filter(p => p.id !== target.dataset.deletePdf);
+          state.selectedPdfId = state.pdfs[0]?.id || null;
+          saveState();
+          showToast('PDF removed');
+          render();
+          return;
+        }
+
+        if (target.dataset.deleteExam) {
+          state.exams = state.exams.filter(x => x.id !== target.dataset.deleteExam);
+          saveState();
+          showToast('Exam removed');
+          render();
+          return;
+        }
+
+        if (target.dataset.toggleTopic) {
+          const [exId, topId] = target.dataset.toggleTopic.split(':');
+          const ex = state.exams.find(x => x.id === exId);
+          const top = ex?.topics.find(t => t.id === topId);
+          if (top) { top.done = !top.done; saveState(); render(); }
+          return;
+        }
+
+        if (target.dataset.rateCard) {
+          const cards = getFilteredCards();
+          const card = cards[state.cardIndex % cards.length];
+          if (card) {
+            const rating = target.dataset.rateCard;
+            card.mastered = rating === 'good' || rating === 'easy';
+            card.interval = rating === 'again' ? '1m' : rating === 'hard' ? '10m' : rating === 'good' ? '2d' : '5d';
+            state.cardIndex = (state.cardIndex + 1) % cards.length;
+            state.cardFlipped = false;
+            saveState();
+            showToast(`Card rated ${rating.toUpperCase()}`);
+            render();
+          }
+          return;
+        }
+
+        if (target.dataset.answerQuiz !== undefined) {
+          const q = state.quizQuestions[state.quizIndex % state.quizQuestions.length];
+          state.quizAnswers[q.id] = Number(target.dataset.answerQuiz);
+          render();
+          return;
+        }
+
+        if (target.dataset.startBlock) {
+          const b = state.timetableBlocks.find(x => x.id === target.dataset.startBlock);
+          if (b) {
+            if (b.autoLock) state.focusLockActive = true;
+            if (!state.timerRunning) toggleTimer();
+            showToast(`Started "${b.title}"`);
+            render();
+          }
+          return;
+        }
+
+        if (target.dataset.deleteBlock) {
+          state.timetableBlocks = state.timetableBlocks.filter(x => x.id !== target.dataset.deleteBlock);
+          saveState();
+          showToast('Timetable block removed');
+          render();
+          return;
+        }
+
+        if (target.dataset.toggleApp) {
+          const app = state.blockedApps.find(a => a.id === target.dataset.toggleApp);
+          if (app) { app.blocked = !app.blocked; saveState(); render(); }
+          return;
+        }
+
+        if (target.dataset.toggleSetting) {
+          const key = target.dataset.toggleSetting;
+          state[key] = !state[key];
+          saveState();
+          render();
+          return;
+        }
+
+        if (target.dataset.selectProvider) {
+          state.aiProvider = target.dataset.selectProvider;
+          state.providerMenuOpen = false;
+          saveState();
+          showToast(`AI engine switched to ${PROVIDERS[state.aiProvider].name}`);
+          render();
+          return;
+        }
+
+        if (target.dataset.pinKey) {
+          const k = target.dataset.pinKey;
+          state.pinError = false;
+          if (k === 'clear') state.pinInput = '';
+          else if (k === 'del') state.pinInput = state.pinInput.slice(0, -1);
+          else if (state.pinInput.length < 4) state.pinInput += k;
+
+          if (state.pinInput.length === 4) {
+            if (state.pinInput === state.pinCode) {
+              state.screenLocked = false;
+              state.pinInput = '';
+              showToast('Workspace unlocked');
+            } else {
+              state.pinError = true;
+              state.pinInput = '';
+            }
+          }
+          render();
+          return;
+        }
+
+        const action = target.dataset.action;
+        if (!action) return;
+
+        if (action === 'toggle-timer') toggleTimer();
+        else if (action === 'toggle-ambient') toggleAmbientSound();
+        else if (action === 'open-search') { state.searchOpen = true; state.searchQuery = ''; render(); }
+        else if (action === 'close-search') { state.searchOpen = false; render(); }
+        else if (action === 'open-settings') { state.settingsOpen = true; render(); }
+        else if (action === 'close-settings') { state.settingsOpen = false; render(); }
+        else if (action === 'toggle-provider-menu') { state.providerMenuOpen = !state.providerMenuOpen; render(); }
+        else if (action === 'lock-screen') { state.screenLocked = true; state.pinInput = ''; state.pinError = false; render(); }
+        else if (action === 'biometric-unlock') { state.screenLocked = false; state.pinInput = ''; showToast('Unlocked with Biometrics'); render(); }
+        else if (action === 'trigger-pdf-upload') { document.getElementById('pdf-file-input')?.click(); }
+        else if (action === 'trigger-json-import') { document.getElementById('json-import-input')?.click(); }
+        else if (action === 'export-json') {
+          const payload = {};
+          Object.keys(defaultPersisted).forEach(k => { payload[k] = state[k]; });
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'nocturne-backup.json';
+          a.click();
+          showToast('Exported workspace backup');
+        }
+        else if (action === 'toggle-focus-lock') {
+          if (state.focusLockActive && state.focusLockStrict && state.timerRunning) {
+            showToast('Strict Mode active: pause timer to unlock apps');
+            return;
+          }
+          state.focusLockActive = !state.focusLockActive;
+          showToast(state.focusLockActive ? 'Focus Lock enabled' : 'Focus Lock disabled');
+          render();
+        }
+        else if (action === 'export-note') {
+          const note = state.notes.find(n => n.id === state.selectedNoteId);
+          if (note) copyTextSafe(`# ${note.title}\nCourse: ${note.course}\n\n${note.content}`);
+        }
+        else if (action === 'new-note' || action === 'create-first-note') {
+          const id = 'n' + Date.now();
+          state.notes.unshift({ id, title: 'Untitled Note', course: 'General', updated: 'Just now', content: '' });
+          state.selectedNoteId = id;
+          state.activeTab = 'notes';
+          saveState();
+          render();
+        }
+        else if (action === 'note-to-cards') {
+          const note = state.notes.find(n => n.id === state.selectedNoteId);
+          if (note) {
+            state.flashcards.unshift({
+              id: 'f' + Date.now(),
+              deck: note.course || 'General',
+              front: `Key concept from "${note.title || 'Untitled Note'}"?`,
+              back: note.content.slice(0, 140) || 'Review note.',
+              interval: 'Due now',
+              mastered: false
+            });
+            saveState();
+            showToast('Flashcard created from note');
+          }
+        }
+        else if (action === 'pdf-add-highlight') {
+          const pdf = state.pdfs.find(p => p.id === state.selectedPdfId);
+          const inp = document.getElementById('pdf-highlight-input');
+          const txt = (inp?.value || '').trim();
+          if (pdf && txt) {
+            pdf.highlights.unshift(txt);
+            saveState();
+            showToast('Highlight saved');
+            render();
+          }
+        }
+        else if (action === 'flip-card') { state.cardFlipped = !state.cardFlipped; render(); }
+        else if (action === 'open-card-modal') { state.showAddCardModal = true; render(); }
+        else if (action === 'close-card-modal') { state.showAddCardModal = false; render(); }
+        else if (action === 'save-card') {
+          const deck = (document.getElementById('card-deck-input')?.value || '').trim() || 'General';
+          const front = (document.getElementById('card-front-input')?.value || '').trim();
+          const back = (document.getElementById('card-back-input')?.value || '').trim();
+          if (front && back) {
+            state.flashcards.unshift({ id: 'f' + Date.now(), deck, front, back, interval: 'Due now', mastered: false });
+            state.showAddCardModal = false;
+            saveState();
+            showToast('Flashcard added');
+            render();
+          } else {
+            showToast('Enter both front and back text');
+          }
+        }
+        else if (action === 'open-quiz-modal') { state.showAddQuizModal = true; render(); }
+        else if (action === 'close-quiz-modal') { state.showAddQuizModal = false; render(); }
+        else if (action === 'save-quiz') {
+          const topic = (document.getElementById('quiz-topic-input')?.value || '').trim() || 'General';
+          const question = (document.getElementById('quiz-question-input')?.value || '').trim();
+          const opts = [0,1,2,3].map(i => (document.getElementById('quiz-opt-' + i)?.value || '').trim());
+          const correct = Number(document.getElementById('quiz-correct-select')?.value || 0);
+          const explanation = (document.getElementById('quiz-exp-input')?.value || '').trim();
+          if (question && opts.every(Boolean)) {
+            state.quizQuestions.push({ id: 'q' + Date.now(), topic, question, options: opts, correct, explanation });
+            state.showAddQuizModal = false;
+            saveState();
+            showToast('Question added');
+            render();
+          } else {
+            showToast('Fill in the question and all 4 options');
+          }
+        }
+        else if (action === 'quiz-prev') { state.quizIndex = (state.quizIndex - 1 + state.quizQuestions.length) % state.quizQuestions.length; render(); }
+        else if (action === 'quiz-next') { state.quizIndex = (state.quizIndex + 1) % state.quizQuestions.length; render(); }
+        else if (action === 'reset-quiz') { state.quizAnswers = {}; state.quizIndex = 0; showToast('Quiz reset'); render(); }
+        else if (action === 'open-exam-modal') { state.showAddExamModal = true; render(); }
+        else if (action === 'close-exam-modal') { state.showAddExamModal = false; render(); }
+        else if (action === 'save-exam') {
+          const title = (document.getElementById('exam-title-input')?.value || '').trim();
+          const date = (document.getElementById('exam-date-input')?.value || '').trim() || 'Upcoming';
+          const rawTopics = (document.getElementById('exam-topics-input')?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+          if (title) {
+            state.exams.push({
+              id: 'e' + Date.now(),
+              title,
+              date,
+              topics: rawTopics.map((label, idx) => ({ id: 't' + Date.now() + idx, label, done: false }))
+            });
+            state.showAddExamModal = false;
+            saveState();
+            showToast('Exam added');
+            render();
+          } else {
+            showToast('Enter an exam title');
+          }
+        }
+        else if (action === 'open-block-modal') { state.showAddBlockModal = true; render(); }
+        else if (action === 'close-block-modal') { state.showAddBlockModal = false; render(); }
+        else if (action === 'save-block') {
+          const title = (document.getElementById('block-title')?.value || '').trim() || 'Study Session';
+          const start = document.getElementById('block-start')?.value || '18:00';
+          const end = document.getElementById('block-end')?.value || '19:30';
+          const type = document.getElementById('block-type')?.value || 'study';
+          const autoLock = Boolean(document.getElementById('block-autolock')?.checked);
+          state.timetableBlocks.push({ id: 't' + Date.now(), day: state.timetableDay, start, end, title, type, autoLock });
+          state.showAddBlockModal = false;
+          saveState();
+          showToast(`Added "${title}" to ${state.timetableDay}`);
+          render();
+        }
+      });
+
+      render();
+    })();
+  </script>
+</body>
+</html>
